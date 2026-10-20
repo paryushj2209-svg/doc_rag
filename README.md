@@ -1,6 +1,6 @@
 # Cost-Efficient Document RAG
 
-A question-answering service for PDF, HTML, and Markdown documents. It converts documents to chunks with Docling, embeds chunks with Sentence Transformers, stores vectors and metadata in LanceDB, retrieves relevant chunks, and asks Gemini to answer using the retrieved evidence with citations. Use the CLI for ingestion and interactive questions, or run the built-in JSON HTTP service.
+A command-line question-answering application for PDF, HTML, and Markdown documents. It converts documents to chunks with Docling, embeds chunks with Sentence Transformers, stores vectors and metadata in LanceDB, retrieves relevant chunks, and asks Gemini to answer using the retrieved evidence with citations.
 
 ## Requirements
 
@@ -92,14 +92,6 @@ python src/main.py ask --top-k 8 "What does the report say about revenue?"
 
 The CLI converts the question to a retrieval request, embeds it with the configured Sentence Transformers model, searches LanceDB, and sends the retrieved text to Gemini. When a source name in the question uniquely matches an ingested document, the CLI applies a source filter. Answers are requested to stay grounded in retrieved evidence and cite source/chunk labels. If there are no retrieved chunks or Gemini reports that the evidence does not answer the question, the CLI reports an error.
 
-### Run the HTTP API
-
-```bash
-python src/main.py serve --host 0.0.0.0 --port 8000
-```
-
-`GET /health` returns a status object. `POST /ask` accepts `{"question":"What does the report say about revenue?"}` and returns the cited answer, retrieved chunk count, request latency, and estimated input/output token counts. Token counts are estimates based on characters (roughly four characters per token); Gemini's provider usage metadata is not currently returned. Each request logs latency, chunk count, and estimated total tokens.
-
 ### Evaluate retrieval
 
 Create a JSON array with 15–30 labeled cases. Each case needs a question and relevant chunk IDs (IDs are stored as `document-id:index` in LanceDB); optional `filters` and `gold_answer` fields are supported.
@@ -150,7 +142,7 @@ The default comparison uses 384-dimensional float32 vectors, 1 KiB metadata per 
 - The embedding model is loaded for each file during ingestion, which adds overhead for batches of documents.
 - No source corpus or relevance judgments are included, so meaningful evaluation results require a corpus-specific 15–30 question labeled dataset. The evaluator rejects smaller datasets instead of presenting a tiny sample as representative.
 - Evaluation results are local artifacts and are not generated during ordinary ingestion or question answering.
-- Token counts in request logs are estimates. The cost model only compares storage and stated fixed compute assumptions; it excludes query and generation costs.
+- The cost model only compares storage and stated fixed compute assumptions; it excludes query and generation costs.
 
 ## AI assistance and usage
 - The implementation and the architecture was designed entirely by the person, with codebase written with some AI assistance. Documentation, metric evaluation and test runs were done by AI.

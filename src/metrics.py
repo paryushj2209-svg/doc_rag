@@ -62,6 +62,9 @@ def retrieval_metrics(
 
 
 def normalize_answer(answer: str) -> str:
+    # The RAG CLI appends citations after the answer. Do not count citation
+    # labels as answer content when comparing against a gold answer.
+    answer = re.split(r"\n\s*Sources:\s*", answer, maxsplit=1, flags=re.IGNORECASE)[0]
     normalized = unicodedata.normalize("NFKD", answer).encode("ascii", "ignore").decode("ascii")
     normalized = normalized.lower()
     normalized = "".join(character for character in normalized if character not in string.punctuation)
@@ -104,9 +107,15 @@ def create_ragas_answer_judge(
             from ragas.embeddings import HuggingFaceEmbeddings
             from ragas.llms import llm_factory
             from ragas.metrics.collections import AnswerRelevancy, Faithfulness
-            from src.data.embedder import DEFAULT_MODEL
         except ImportError as exc:
             raise ImportError("Install the 'ragas' dependency and its Google GenAI integration to evaluate answers") from exc
+        try:
+            from data.embedder import DEFAULT_MODEL
+        except ImportError:
+            try:
+                from src.data.embedder import DEFAULT_MODEL
+            except ImportError as exc:
+                raise ImportError("Could not import the configured default embedding model") from exc
         client = genai.Client(api_key=api_key)
         evaluator_llm = llm_factory(selected_model, provider="google", client=client)
         evaluator_embeddings = HuggingFaceEmbeddings(model=embedding_model or DEFAULT_MODEL)
@@ -135,7 +144,17 @@ def create_ragas_answer_judge(
             )
             return faithfulness, relevance
 
-        faithfulness, relevance = asyncio.run(score_metrics())
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            faithfulness, relevance = asyncio.run(score_metrics())
+        else:
+            # `asyncio.run` cannot execute inside an existing event loop. Run
+            # the RAGAS coroutine in its own thread for async application callers.
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                faithfulness, relevance = executor.submit(asyncio.run, score_metrics()).result()
         return {
             "faithfulness": float(faithfulness.value),
             "answer_relevance": float(relevance.value),
@@ -158,7 +177,8 @@ def evaluate_answer(
         "token_f1": None,
     }
     if judge is not None:
-        judged = judge(question, answer, retrieved_chunks)
+        answer_for_judging = re.split(r"\n\s*Sources:\s*", answer, maxsplit=1, flags=re.IGNORECASE)[0]
+        judged = judge(question, answer_for_judging, retrieved_chunks)
         for name in ("faithfulness", "answer_relevance"):
             score = judged.get(name)
             if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:

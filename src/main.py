@@ -1,9 +1,7 @@
 import argparse
 import json
-import logging
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -63,14 +61,6 @@ def format_evidence(results: list[dict[str, Any]]) -> str:
     return "Retrieved evidence:\n\n" + "\n\n".join(passages)
 
 
-def _usage_estimate(question: str, chunks: Iterable[dict[str, Any]], answer: str) -> dict[str, int]:
-    """Rough token estimate (characters / 4); provider usage metadata is not exposed."""
-    contexts = "".join(str(chunk.get("text", "")) for chunk in chunks)
-    input_tokens = (len(question) + len(contexts)) // 4
-    output_tokens = len(answer) // 4
-    return {"input": input_tokens, "output": output_tokens, "total_tokens": input_tokens + output_tokens}
-
-
 def ask_documents(
     question: str,
     retriever: Any,
@@ -118,14 +108,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default=os.getenv("RAG_EMBEDDING_MODEL", DEFAULT_MODEL),
     )
-    serve_parser = subparsers.add_parser("serve", help="Run the JSON HTTP API")
-    serve_parser.add_argument("--host", default=os.getenv("RAG_HOST", "127.0.0.1"))
-    serve_parser.add_argument("--port", type=int, default=int(os.getenv("RAG_PORT", "8000")))
-    serve_parser.add_argument("--top-k", type=int, default=5)
-    serve_parser.add_argument("--db-uri", default=os.getenv("RAG_DB_URI", "./data/lancedb"))
-    serve_parser.add_argument("--table", default=os.getenv("RAG_TABLE", "document_chunks"))
-    serve_parser.add_argument("--embedding-model", default=os.getenv("RAG_EMBEDDING_MODEL", DEFAULT_MODEL))
-
     eval_parser = subparsers.add_parser("evaluate", help="Evaluate retrieval against a labeled JSON dataset")
     eval_parser.add_argument("dataset", type=Path)
     eval_parser.add_argument("--output", type=Path, default=Path("evaluation-results.json"))
@@ -210,70 +192,6 @@ def main(
             print(f"Wrote cost comparison to {args.output}")
             for row in result["rows"]:
                 print(f"{row['vectors']:,} vectors: local ${row['local_monthly_usd']:.2f}/mo; managed assumption ${row['managed_monthly_usd']:.2f}/mo")
-            return 0
-
-        if args.command == "serve":
-            if not 1 <= args.top_k <= 100 or not 1 <= args.port <= 65535:
-                raise ValueError("top_k must be 1–100 and port must be 1–65535")
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-            active_retriever = retriever or LanceDBRetriever(
-                database_uri=args.db_uri,
-                table_name=args.table,
-                embedding_model=args.embedding_model,
-            )
-            available_sources = source_loader(args.db_uri) if source_loader else []
-
-            class Handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    if self.path != "/health":
-                        self.send_error(404)
-                        return
-                    self._json(200, {"status": "ok"})
-
-                def do_POST(self):
-                    if self.path != "/ask":
-                        self.send_error(404)
-                        return
-                    started = time.perf_counter()
-                    try:
-                        length = int(self.headers.get("Content-Length", "0"))
-                        if length < 1 or length > 1_000_000:
-                            raise ValueError("Request body must be between 1 byte and 1 MB")
-                        payload = json.loads(self.rfile.read(length))
-                        question = payload.get("question") if isinstance(payload, dict) else None
-                        if not isinstance(question, str) or not question.strip():
-                            raise ValueError("JSON body must contain a non-empty 'question'")
-                        request = convert_query(question, available_sources, args.top_k)
-                        chunks = active_retriever.retrieve(request)
-                        answer_text = summarize_retrieved(request, chunks, model=os.getenv("GEMINI_MODEL"))
-                        elapsed = (time.perf_counter() - started) * 1000
-                        usage = _usage_estimate(question, chunks, answer_text)
-                        logging.info("request_ms=%.2f chunks=%d estimated_tokens=%d", elapsed, len(chunks), usage["total_tokens"])
-                        self._json(200, {"answer": answer_text, "chunk_count": len(chunks), "latency_ms": round(elapsed, 2), "estimated_tokens": usage})
-                    except (ValueError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
-                        self._json(400, {"error": str(exc)})
-
-                def _json(self, status, payload):
-                    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                    self.send_response(status)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-
-                def log_message(self, fmt, *values):
-                    logging.info("%s - %s", self.address_string(), fmt % values)
-
-            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-            server = ThreadingHTTPServer((args.host, args.port), Handler)
-            print(f"Serving RAG API at http://{args.host}:{args.port} (POST /ask, GET /health)")
-            try:
-                server.serve_forever()
-            except KeyboardInterrupt:
-                pass
-            finally:
-                server.server_close()
             return 0
 
         if not 1 <= args.top_k <= 100:
