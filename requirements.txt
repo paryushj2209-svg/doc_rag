@@ -1,0 +1,10 @@
+docling
+sentence-transformers
+lancedb
+google-genai
+llama-index-core
+llama-index-readers-docling
+llama-index-node-parser-docling
+llama-index-embeddings-huggingface
+
+ragas
