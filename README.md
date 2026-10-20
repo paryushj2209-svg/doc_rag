@@ -48,16 +48,6 @@ $env:GEMINI_API_KEY = "your-key"
 $env:GEMINI_MODEL = "your-available-gemini-model"
 ```
 
-Optional settings:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `RAG_DB_URI` | `./data/lancedb` | LanceDB database directory |
-| `RAG_TABLE` | `document_chunks` | Vector table used by retrieval |
-| `RAG_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Sentence Transformers model used for document and query embeddings |
-
-The embedding model used at ingestion must match the model used at retrieval. Keep the same `RAG_EMBEDDING_MODEL` value for both operations. LanceDB data is local and excluded from Git.
-
 ## Usage
 
 ### Ingest documents
@@ -100,12 +90,6 @@ python src/main.py ask --top-k 8 "What does the report say about revenue?"
 
 The CLI converts the question to a retrieval request, embeds it with the configured Sentence Transformers model, searches LanceDB, and sends the retrieved text to Gemini. When a source name in the question uniquely matches an ingested document, the CLI applies a source filter. Answers are requested to stay grounded in retrieved evidence and cite source/chunk labels. If there are no retrieved chunks or Gemini reports that the evidence does not answer the question, the CLI reports an error.
 
-### Inspect Gemini's raw response
-
-The diagnostic script uses the same query conversion and LanceDB retrieval path but returns Gemini's response text without requiring or parsing JSON:
-
-```bash
-python src/test/test_gemini_raw.py
 ```
 
 It prompts for a question. It requires an already-ingested corpus, the configuration above, and a live Gemini API call.
@@ -120,19 +104,7 @@ It prompts for a question. It requires an already-ingested corpus, the configura
 - `src/retrieval/retrieval.py` embeds queries and performs vector search with optional source or document ID filters.
 - `src/llm/llm.py` calls Gemini, requests a structured summary, and validates that citations refer to retrieved chunk IDs.
 - `src/metrics.py` contains retrieval metrics, RAGAS-based answer evaluation, latency summaries, exact match/token F1 helpers, and a parameterized storage-cost estimate.
-- `src/test/test.py` contains mocked unit tests. `src/test/test_gemini_raw.py` is a manual live-API diagnostic script.
 
-LlamaIndex packages are present in `requirements.txt`, but the current `src/data/ingestion.py` implementation uses Docling and the project's own ingestion code directly; it does not currently call LlamaIndex.
-
-## Tests
-
-The test module is named `src/test/test.py`, so specify it explicitly when running pytest:
-
-```bash
-python -m pytest src/test/test.py -q
-```
-
-Most tests use mocks and do not call Gemini. The raw-response diagnostic script does make a real Gemini API call and is separate from the unit tests.
 
 ## Evaluation
 
@@ -146,3 +118,5 @@ The metrics are currently exposed as Python functions in `src/metrics.py`; there
 - The embedding model is loaded for each file during ingestion, which adds overhead for batches of documents.
 - Dependencies are not pinned, and the current implementation does not have an HTTP service or a ready-to-run evaluation dataset/results artifact.
 
+## AI assistance and usage
+- The implementation and the architecture was designed entirely by the person, with codebase written with some AI assistance. Documentation, metric evaluation and test runs were done by AI.
