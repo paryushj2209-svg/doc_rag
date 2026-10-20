@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Mapping, Sequence
 
 
@@ -15,10 +16,61 @@ _OUTPUT_SCHEMA = {
         "citations": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["status", "summary", "citations"],
-    "additionalProperties": False,
 }
 
 _client_instance: Any = None
+
+
+def _decode_model_output(response: Any) -> Mapping[str, Any]:
+    """Read Gemini's structured result, tolerating SDK parsed values and fenced JSON."""
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, Mapping):
+        return parsed
+    if parsed is not None:
+        dump = getattr(parsed, "model_dump", None)
+        if callable(dump):
+            value = dump()
+            if isinstance(value, Mapping):
+                return value
+        as_dict = getattr(parsed, "dict", None)
+        if callable(as_dict):
+            value = as_dict()
+            if isinstance(value, Mapping):
+                return value
+
+    output_text = getattr(response, "text", "")
+    if not isinstance(output_text, str) or not output_text.strip():
+        raise RuntimeError("The language model returned no summary")
+    cleaned = output_text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.IGNORECASE | re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+
+    # Some model/API combinations add a short preamble despite JSON mode. Decode
+    # from the first object marker while still requiring a complete JSON object.
+    decoder = json.JSONDecoder()
+    start = cleaned.find("{")
+    if start >= 0:
+        try:
+            value, _ = decoder.raw_decode(cleaned[start:])
+            if isinstance(value, Mapping):
+                return value
+        except json.JSONDecodeError:
+            pass
+    candidates = getattr(response, "candidates", None) or []
+    finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    if finish_reason is not None:
+        finish_reason = getattr(finish_reason, "name", str(finish_reason))
+    feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(feedback, "block_reason", None) if feedback else None
+    if block_reason:
+        block_reason = getattr(block_reason, "name", str(block_reason))
+        raise RuntimeError(f"Gemini blocked the answer request (reason: {block_reason})")
+    if finish_reason and "MAX_TOKENS" in str(finish_reason):
+        raise RuntimeError("Gemini stopped before completing the JSON answer (MAX_TOKENS); increase the output token limit")
+    text_length = len(output_text)
+    reason = f"; finish_reason={finish_reason}" if finish_reason else ""
+    raise RuntimeError(f"Gemini returned malformed or incomplete summary JSON ({text_length} text characters{reason})")
 
 
 def _get_client() -> Any:
@@ -86,7 +138,7 @@ def summarize_retrieved(
     retrieved_chunks: Sequence[Mapping[str, Any]],
     client: Any = None,
     model: str | None = None,
-    max_output_tokens: int = 300,
+    max_output_tokens: int = 1024,
 ) -> str:
     request = _parse_request(query_json)
     evidence, citation_labels = _prepare_evidence(retrieved_chunks)
@@ -111,24 +163,21 @@ def summarize_retrieved(
                     "values supporting the summary. Return only the required JSON structure."
             ),
             "response_mime_type": "application/json",
-            "response_json_schema": _OUTPUT_SCHEMA,
+            "response_schema": _OUTPUT_SCHEMA,
             "temperature": 0,
             "max_output_tokens": max_output_tokens,
         },
     )
 
-    output_text = getattr(response, "text", "")
-    if not output_text:
-        raise RuntimeError("The language model returned no summary")
-    try:
-        output = json.loads(output_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("The language model returned invalid summary JSON") from exc
+    output = _decode_model_output(response)
 
-    if output.get("status") == "error":
+    status = output.get("status")
+    if status == "error":
         raise NoSupportingInformationError(
             output.get("summary") or "The retrieved chunks do not contain the requested information"
         )
+    if status != "ok":
+        raise RuntimeError("The language model returned an invalid summary status")
     summary = output.get("summary")
     cited_ids = output.get("citations")
     if not isinstance(summary, str) or not summary.strip():

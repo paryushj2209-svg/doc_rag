@@ -23,15 +23,21 @@ class IngestionPipeline:
         table_name: str = "document_chunks",
         manifest_table_name: str = "document_manifest",
         embedding_model: str = DEFAULT_MODEL,
+        chunk_size: int = 1200,
+        chunk_overlap: int = 150,
         db: Any = None,
         parser: Callable[[str | Path], Any] = parse_file,
         chunker: Callable[..., list[Any]] = chunk_document,
         embedder: Callable[..., list[list[float]]] = embed_chunks,
     ) -> None:
+        if chunk_size < 1 or chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            raise ValueError("chunk_size must be positive and chunk_overlap must be smaller")
         self.database_uri = database_uri
         self.table_name = table_name
         self.manifest_table_name = manifest_table_name
         self.embedding_model = embedding_model
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self._db = db
         self._parser = parser
         self._chunker = chunker
@@ -60,6 +66,8 @@ class IngestionPipeline:
         settings = {
 
             "embedding_model": self.embedding_model,
+            "chunk_size": self.chunk_size,
+            "chunk_overlap": self.chunk_overlap,
         }
         return hashlib.sha256(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -120,7 +128,7 @@ class IngestionPipeline:
             return IngestionResult(str(source), "skipped", int(manifest.get("chunk_count", 0)))
 
         document = self._parser(source)
-        chunks = self._chunker(document)
+        chunks = self._chunker(document, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
         vectors = self._embedder(chunks, model_name=self.embedding_model)
         if len(chunks) != len(vectors):
             raise ValueError("The embedder must return one vector per chunk")
@@ -163,9 +171,13 @@ def ingest_files(
     file_paths: Iterable[str | Path],
     database_uri: str = "./data/lancedb",
     embedding_model: str = DEFAULT_MODEL,
+    chunk_size: int = 1200,
+    chunk_overlap: int = 150,
 ) -> list[IngestionResult]:
     pipeline = IngestionPipeline(
         database_uri=database_uri,
         embedding_model=embedding_model,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
     return pipeline.ingest_files(file_paths)
